@@ -1,0 +1,15 @@
+# ---------- Phase 1: ingestion pipeline ----------
+pypdf>=5.0                      # PDF text extraction (maintained successor of PyPDF2)
+langchain-core>=1.0             # Document, Embeddings, prompt/runnable primitives
+langchain-text-splitters>=1.0   # RecursiveCharacterTextSplitter
+langchain-chroma>=1.0           # LangChain <-> ChromaDB integration
+chromadb>=1.0                   # Local, disk-persisted vector database
+python-dotenv>=1.0              # Loads API keys from .env
+
+# ---------- LLM / embedding providers (install both, use either) ----------
+langchain-google-genai>=4.0     # Gemini chat + embeddings
+langchain-openai>=1.0           # OpenAI chat + embeddings
+
+# ---------- Phase 2: API server (installed now so you only install once) ----------
+fastapi>=0.115
+uvicorn[standard]>=0.30
