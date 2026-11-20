@@ -89,7 +89,7 @@ def load_pdf(path: Path, source: str, file_hash: str) -> list[Document]:
     return pages
 
 
-def build_splitter() -> RecursiveCharacterTextSplitter
+def build_splitter() -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
         chunk_size=config.CHUNK_SIZE,
         chunk_overlap=config.CHUNK_OVERLAP,
