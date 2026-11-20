@@ -1,15 +1,3 @@
-"""
-config.py — Central settings and provider factories.
-
-Shared by `ingest.py` (Phase 1) and `main.py` (Phase 2) so both sides of the
-pipeline are guaranteed to use the SAME embedding model and the SAME Chroma
-collection. If ingestion and retrieval used different embedding models, the
-query vectors would live in a different vector space than the stored chunks
-and retrieval would silently return garbage.
-
-Swapping providers is a one-line change in `.env`:  LLM_PROVIDER=gemini|openai
-"""
-
 from __future__ import annotations
 
 import os
@@ -23,24 +11,16 @@ from langchain_core.runnables import Runnable
 
 load_dotenv()
 
-# --------------------------------------------------------------------------- #
-# Paths
-# --------------------------------------------------------------------------- #
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 CHROMA_DIR = Path(os.getenv("CHROMA_DIR", BASE_DIR / "chroma_db"))
 
-# --------------------------------------------------------------------------- #
-# Chunking
-# --------------------------------------------------------------------------- #
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 
-# --------------------------------------------------------------------------- #
-# Provider selection
-# --------------------------------------------------------------------------- #
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE","1000"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP","200"))
+
 SUPPORTED_PROVIDERS = ("gemini", "openai")
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER","gemini").strip().lower()
 
 GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
@@ -54,9 +34,6 @@ OPENAI_FALLBACK_MODELS = os.getenv("OPENAI_FALLBACK_MODELS", "")
 
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "1"))
 
-# --------------------------------------------------------------------------- #
-# Retrieval / API
-# --------------------------------------------------------------------------- #
 TOP_K = int(os.getenv("TOP_K", "3"))
 CORS_ORIGINS = [
     o.strip()
@@ -68,7 +45,6 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", f"documents_{LLM_PROVIDER}")
 
 
 def _require_env(name: str) -> str:
-    """Return an environment variable or fail with an actionable message."""
     value = os.getenv(name, "").strip()
     if not value:
         raise RuntimeError(
@@ -79,11 +55,6 @@ def _require_env(name: str) -> str:
 
 
 def get_embeddings() -> Embeddings:
-    """Factory: return the embedding model for the configured provider.
-
-    Imports are done lazily so a missing optional package for the provider
-    you are *not* using never breaks the app.
-    """
     if LLM_PROVIDER == "gemini":
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
@@ -94,7 +65,6 @@ def get_embeddings() -> Embeddings:
 
     if LLM_PROVIDER == "openai":
         from langchain_openai import OpenAIEmbeddings
-
         return OpenAIEmbeddings(
             model=OPENAI_EMBED_MODEL,
             api_key=_require_env("OPENAI_API_KEY"),
@@ -111,10 +81,8 @@ def _split_models(value: str) -> list[str]:
 
 
 def _build_chat_model(model: str) -> BaseChatModel:
-    """Create a single chat model for the configured provider."""
     if LLM_PROVIDER == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
-
         return ChatGoogleGenerativeAI(
             model=model,
             google_api_key=_require_env("GOOGLE_API_KEY"),
@@ -123,7 +91,6 @@ def _build_chat_model(model: str) -> BaseChatModel:
 
     if LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
-
         return ChatOpenAI(
             model=model,
             api_key=_require_env("OPENAI_API_KEY"),
@@ -137,16 +104,6 @@ def _build_chat_model(model: str) -> BaseChatModel:
 
 
 def get_llm() -> Runnable:
-    """Factory: return the chat model (with fallbacks) for the configured provider.
-
-    The primary model is wrapped with LangChain's `.with_fallbacks()`, so a
-    503 "high demand" or 429 rate-limit error on one model transparently
-    retries the request on the next model in the chain.
-
-    Temperature is left at each provider's default on purpose: newer
-    reasoning models (Gemini 3.x, GPT-5.x) reject or are tuned away from
-    custom values. Grounding comes from the prompt, not from temperature.
-    """
     if LLM_PROVIDER == "gemini":
         primary, fallbacks = GEMINI_CHAT_MODEL, _split_models(GEMINI_FALLBACK_MODELS)
     elif LLM_PROVIDER == "openai":
@@ -156,7 +113,6 @@ def get_llm() -> Runnable:
             f"Unsupported LLM_PROVIDER '{LLM_PROVIDER}'. "
             f"Choose one of: {', '.join(SUPPORTED_PROVIDERS)}."
         )
-
     fallbacks = [m for m in fallbacks if m != primary]
     llm = _build_chat_model(primary)
     if not fallbacks:
@@ -165,12 +121,10 @@ def get_llm() -> Runnable:
 
 
 def get_vectorstore(embeddings: Embeddings | None = None) -> Chroma:
-    """Open (or create) the persistent Chroma collection on disk."""
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
     return Chroma(
         collection_name=COLLECTION_NAME,
         embedding_function=embeddings or get_embeddings(),
         persist_directory=str(CHROMA_DIR),
-        # Cosine distance is the standard choice for normalized text embeddings.
         collection_metadata={"hnsw:space": "cosine"},
     )

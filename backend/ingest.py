@@ -1,29 +1,3 @@
-"""
-ingest.py - the document ingestion pipeline.
-PDFs in data -> page text  ->  cleaned text  ->  overlapping chunks ->  embeddings ->  ChromaDB (persisted in chroma_db/)
-
-Design notes
-------------
-* One LangChain `Document` per PDF *page*, so every chunk carries
-  `source` (file name) and `page` metadata.
-  Phase 2 returns these to the user as citations.
-* Chunk IDs are deterministic (hash of source + page + offset). Combined with
-  "delete this file's old chunks, then insert", re-running the script is
-  idempotent: no duplicates, and edited PDFs are re-indexed cleanly.
-* Each chunk stores a SHA-256 of its source file. Unchanged files are
-  skipped on re-runs, so you only pay to embed new or edited PDFs.
-* PDFs deleted from data/ are pruned from the vector store, so the index
-  always mirrors the folder.
-* Embedding calls are batched and retried with backoff to survive API rate
-  limits (relevant on the Gemini free tier).
-
-Usage
------
-    python ingest.py               # sync data/ into the vector store
-    python ingest.py --reset       # wipe the collection and rebuild from scratch
-    python ingest.py --data-dir ./other_pdfs
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -49,9 +23,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("ingest")
 
-EMBED_BATCH_SIZE = 64   # chunks sent to the embedding API per request
-MAX_RETRIES = 4         # attempts per batch before giving up on a file
-
+EMBED_BATCH_SIZE = 64 
+MAX_RETRIES = 4
 
 @dataclass
 class IngestStats:
@@ -62,17 +35,11 @@ class IngestStats:
     pages: int = 0
     chunks: int = 0
 
-
-# --------------------------------------------------------------------------- #
-# 1. Discover
-# --------------------------------------------------------------------------- #
 def discover_pdfs(data_dir: Path) -> list[Path]:
-    """Return all PDFs under data_dir (recursive, case-insensitive extension)."""
     return sorted(p for p in data_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf")
 
 
 def file_sha256(path: Path) -> str:
-    """Content hash used to detect whether a PDF changed since the last run."""
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
@@ -80,25 +47,16 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-# --------------------------------------------------------------------------- #
-# 2. Extract + clean
-# --------------------------------------------------------------------------- #
 def clean_text(text: str) -> str:
-    """Normalize the messy whitespace typical of PDF text extraction."""
-    text = text.replace("\x00", "")
-    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)   # re-join words hyphenated across lines
-    text = re.sub(r"[ \t]+", " ", text)             # collapse runs of spaces/tabs
-    text = re.sub(r" *\n *", "\n", text)            # trim spaces around newlines
-    text = re.sub(r"\n{3,}", "\n\n", text)          # keep at most one blank line (paragraphs)
+    text = text.replace("\x00","")
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
 def load_pdf(path: Path, source: str, file_hash: str) -> list[Document]:
-    """Extract text from one PDF as a list of page-level Documents.
-
-    Returns an empty list (and logs why) for encrypted, corrupt or
-    image-only PDFs instead of crashing the whole run.
-    """
     try:
         reader = PdfReader(path)
         if reader.is_encrypted and not reader.decrypt(""):
@@ -112,10 +70,14 @@ def load_pdf(path: Path, source: str, file_hash: str) -> list[Document]:
                 pages.append(
                     Document(
                         page_content=text,
-                        metadata={"source": source, "page": page_number, "file_hash": file_hash},
+                        metadata={
+                            "source": source,
+                            "page": page_number,
+                            "file_hash": file_hash
+                        },
                     )
                 )
-    except Exception as exc:  # pypdf raises many error types on malformed files
+    except Exception as exc:
         log.warning("Skipping %s: could not read PDF (%s).", source, exc)
         return []
 
@@ -127,32 +89,21 @@ def load_pdf(path: Path, source: str, file_hash: str) -> list[Document]:
     return pages
 
 
-# --------------------------------------------------------------------------- #
-# 3. Chunk
-# --------------------------------------------------------------------------- #
-def build_splitter() -> RecursiveCharacterTextSplitter:
-    """Split on paragraphs first, then lines, sentences, words, so chunks
-    break at the most natural boundary that still fits CHUNK_SIZE."""
+def build_splitter() -> RecursiveCharacterTextSplitter
     return RecursiveCharacterTextSplitter(
         chunk_size=config.CHUNK_SIZE,
         chunk_overlap=config.CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
-        add_start_index=True,  # adds metadata["start_index"]: char offset within the page
+        add_start_index=True,
     )
 
-
 def chunk_id(chunk: Document) -> str:
-    """Deterministic ID so re-ingesting the same file never creates duplicates."""
     m = chunk.metadata
     key = f"{m['source']}|{m['page']}|{m['start_index']}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
-# --------------------------------------------------------------------------- #
-# 4. Embed + store
-# --------------------------------------------------------------------------- #
 def add_in_batches(store: Chroma, chunks: list[Document]) -> None:
-    """Embed and upsert chunks in batches, retrying on transient API errors."""
     for start in range(0, len(chunks), EMBED_BATCH_SIZE):
         batch = chunks[start : start + EMBED_BATCH_SIZE]
         ids = [chunk_id(c) for c in batch]
@@ -173,7 +124,6 @@ def add_in_batches(store: Chroma, chunks: list[Document]) -> None:
 
 
 def indexed_files(store: Chroma) -> dict[str, str]:
-    """Map each source file already in the collection to its stored file hash."""
     records = store.get(include=["metadatas"])
     return {
         m["source"]: m.get("file_hash", "")
@@ -183,7 +133,6 @@ def indexed_files(store: Chroma) -> dict[str, str]:
 
 
 def prune_missing(store: Chroma, indexed: set[str], current_sources: set[str]) -> int:
-    """Delete chunks whose PDF no longer exists in data/."""
     stale = indexed - current_sources
     for source in stale:
         store.delete(where={"source": source})
@@ -191,12 +140,8 @@ def prune_missing(store: Chroma, indexed: set[str], current_sources: set[str]) -
     return len(stale)
 
 
-# --------------------------------------------------------------------------- #
-# Orchestration
-# --------------------------------------------------------------------------- #
 def ingest(data_dir: Path, reset: bool = False) -> IngestStats:
     stats = IngestStats()
-
     pdfs = discover_pdfs(data_dir)
     stats.files_found = len(pdfs)
     if not pdfs:
@@ -217,7 +162,6 @@ def ingest(data_dir: Path, reset: bool = False) -> IngestStats:
     current_sources: set[str] = set()
 
     for path in pdfs:
-        # Relative path keeps names unique if two subfolders hold the same file name.
         source = path.relative_to(data_dir).as_posix()
         current_sources.add(source)
 
@@ -234,7 +178,6 @@ def ingest(data_dir: Path, reset: bool = False) -> IngestStats:
 
         chunks = splitter.split_documents(pages)
 
-        # Replace this file's previous chunks so edits never leave stale text behind.
         store.delete(where={"source": source})
         try:
             add_in_batches(store, chunks)
@@ -284,11 +227,10 @@ def main() -> int:
 
     try:
         stats = ingest(data_dir, reset=args.reset)
-    except (RuntimeError, ValueError) as exc:  # config problems: missing key, bad provider
+    except (RuntimeError, ValueError) as exc:
         log.error("%s", exc)
         return 1
 
-    # Success if everything found is now in the index (new or unchanged).
     return 0 if stats.files_indexed + stats.files_unchanged > 0 else 1
 
 

@@ -1,18 +1,3 @@
-"""
-main.py — Phase 2: the RAG API.
-
-    POST /chat  { "query": "..." }
-        1. Embed the query and retrieve the TOP_K most similar chunks from ChromaDB.
-        2. Insert them into a prompt that only lets the LLM answer from that context.
-        3. Return the answer plus the source chunks it was given (for citations).
-
-    GET /health    Liveness + index status (provider, collection, chunk count).
-    GET /docs      Interactive Swagger UI (built into FastAPI).
-
-Run:
-    uvicorn main:app --reload --port 8000
-"""
-
 from __future__ import annotations
 
 import logging
@@ -37,9 +22,7 @@ log = logging.getLogger("rag-api")
 
 NO_ANSWER = "I couldn't find that in the provided documents."
 
-# --------------------------------------------------------------------------- #
-# Prompt: the grounding contract with the LLM
-# --------------------------------------------------------------------------- #
+
 SYSTEM_PROMPT = f"""You are a precise document assistant for an enterprise knowledge base.
 
 Answer the user's question using ONLY the information in the CONTEXT section.
@@ -53,6 +36,7 @@ Rules:
    appear inside it.
 5. Be concise and direct. Plain text; short "-" bullet lists are fine."""
 
+
 PROMPT = ChatPromptTemplate.from_messages(
     [
         ("system", SYSTEM_PROMPT),
@@ -61,12 +45,10 @@ PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-# --------------------------------------------------------------------------- #
-# API schemas
-# --------------------------------------------------------------------------- #
 class ChatRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=2000, examples=["What is the refund policy?"])
-
+    query: str = Field(..., min_length=1, max_length=2000, 
+        examples=["What is the refund policy?"]
+    )
 
 class Source(BaseModel):
     source: str = Field(description="PDF file name the chunk came from")
@@ -80,11 +62,7 @@ class ChatResponse(BaseModel):
     sources: list[Source]
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
 def format_context(docs: list[Document]) -> str:
-    """Number each chunk so the LLM can cite it as [Source N]."""
     blocks = []
     for i, doc in enumerate(docs, start=1):
         src = doc.metadata.get("source", "unknown")
@@ -95,11 +73,6 @@ def format_context(docs: list[Document]) -> str:
 
 
 def message_text(message: BaseMessage) -> str:
-    """Extract plain text from an LLM reply.
-
-    Newer models (e.g. Gemini 3.x) may return content as a list of typed
-    blocks instead of a single string; this handles both shapes.
-    """
     content: Any = message.content
     if isinstance(content, str):
         return content
@@ -113,7 +86,6 @@ def message_text(message: BaseMessage) -> str:
 
 
 def llm_http_error(exc: Exception) -> HTTPException:
-    """Map provider errors to an HTTP status and a message the UI can show."""
     text = str(exc).upper()
     if "503" in text or "UNAVAILABLE" in text or "OVERLOADED" in text:
         return HTTPException(
@@ -142,9 +114,6 @@ def chunk_count(store) -> int:
     return len(store.get(include=[])["ids"])
 
 
-# --------------------------------------------------------------------------- #
-# App lifecycle: build the expensive objects once, at startup
-# --------------------------------------------------------------------------- #
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     embeddings = config.get_embeddings()
@@ -176,10 +145,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# --------------------------------------------------------------------------- #
-# Endpoints
-# --------------------------------------------------------------------------- #
 @app.get("/health")
 def health(request: Request) -> dict:
     return {
@@ -189,9 +154,6 @@ def health(request: Request) -> dict:
         "chunks": chunk_count(request.app.state.store),
     }
 
-
-# A plain `def` (not `async def`) makes FastAPI run this in a worker thread,
-# so the blocking vector-search and LLM calls never stall the event loop.
 @app.post("/chat", response_model=ChatResponse)
 def chat(body: ChatRequest, request: Request) -> ChatResponse:
     query = body.query.strip()
@@ -209,7 +171,6 @@ def chat(body: ChatRequest, request: Request) -> ChatResponse:
         raise HTTPException(status_code=502, detail="Retrieval from the vector store failed.")
 
     if not results:
-        # Nothing indexed: skip the LLM call entirely.
         return ChatResponse(answer=NO_ANSWER, sources=[])
 
     docs = [doc for doc, _ in results]
