@@ -1,6 +1,5 @@
 import axios from "axios";
 
-// All backend communication lives here, so components never deal with URLs or HTTP details.
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000",
   timeout: 60_000, // LLM answers can take a while
@@ -17,7 +16,6 @@ export async function sendChat(query) {
   return data;
 }
 
-/** Turn any Axios error into a short, human-readable message. */
 export function describeError(err) {
   if (err.code === "ECONNABORTED") return "The request timed out. Please try again.";
   if (!err.response) return "Can't reach the backend. Is the API running on port 8000?";
